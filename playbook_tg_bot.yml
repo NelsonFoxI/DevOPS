@@ -1,0 +1,233 @@
+- name: Initial Setup
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update Apt
+      apt:
+        upgrade: yes
+        update_cache: yes
+        cache_valid_time: 86400
+      become: yes
+    - name: Install PostgreSQL & Python
+      ansible.builtin.apt:
+        name:
+          - postgresql-contrib
+          - postgresql-common
+          - python3
+          - python3-dev
+          - python3-pip
+          - jq
+      become: yes
+    - name: Install Python Reqiurements
+      pip:                
+        name:
+          - python-telegram-bot==20.3
+          - paramiko
+          - psycopg2-binary
+          - python-dotenv
+      become: yes
+- name: Master Init
+  hosts: master
+  become: yes
+  tasks:
+    - name: Create folder for replication
+      ansible.builtin.file:
+        path: /oracle/pg_data/archive
+        owner: postgres
+        group: postgres
+        state: directory
+      become: yes
+    - name: Check PostgreSQL
+      ansible.builtin.command: 
+        cmd: "pg_ctlcluster 14 main status"
+      register: postgres_status
+      ignore_errors: true
+      become: yes
+    - name: Initialize PostgreSQL
+      ansible.builtin.command: 
+        cmd: "pg_createcluster 14 main"
+      when: postgres_status.stdout.find('specified cluster \'14 main\' does not exist') != -1
+      become: yes
+    - name: Get p h
+      ansible.builtin.shell: "pg_lsclusters --json | jq -r '.[].config.hba_file'"
+      register: pg_hba_path
+    - name: Get p c
+      ansible.builtin.shell: "pg_lsclusters --json | jq -r '.[].configdir'"
+      register: pg_conf_path
+    - name: Set User Access Configuration
+      ansible.builtin.blockinfile:
+        create: true
+        path: "{{pg_hba_path.stdout}}"
+        block: |
+          local all {{DB_USER}} peer
+          host all all 0.0.0.0/0 password
+          host replication {{DB_REPL_USER}} {{DB_REPL_HOST}}/24 trust
+      become: yes
+      become_user: root
+    - name: Set Database Configuration
+      ansible.builtin.blockinfile:
+        create: true
+        path: "{{pg_conf_path.stdout}}/postgresql.conf"
+        block: | 
+          listen_addresses = '*'
+          port = {{DB_PORT}}
+          log_destination = 'stderr'
+          logging_collector = on
+          log_directory = '/var/log/postgresql/'
+          log_filename = 'postgresql.log'
+          log_file_mode = 0644
+          archive_mode = on
+          archive_command = 'cp %p /oracle/pg_data/archive/%f'
+          max_wal_senders = 10
+          wal_level = replica
+          wal_log_hints = on
+          log_replication_commands = on
+      become: yes
+    - name: Restart PostgreSQL
+      ansible.builtin.service:
+          name: postgresql@14-main
+          state: restarted
+      become: yes
+    - name: Set PostgreSQL Account
+      community.postgresql.postgresql_user:
+        name: "{{DB_USER}}"
+        password: "{{DB_PASSWORD}}"
+        role_attr_flags: SUPERUSER  
+      become: yes
+      become_user: postgres
+    - name: Create Replication User
+      community.postgresql.postgresql_user:
+        name: "{{DB_REPL_USER}}"
+        password: "{{DB_REPL_PASSWORD}}"
+        role_attr_flags: REPLICATION,LOGIN,SUPERUSER
+      become: yes
+      become_user: postgres
+    - name: Copy init.sql
+      copy:
+        src: init.sql
+        dest: /tmp/init.sql
+    - name: Set Privilegies
+      file:
+        path: /tmp/init.sql
+        owner: postgres
+        group: postgres
+        mode: '0644'
+    - name: Replace RegExp DB
+      replace:
+        path: /tmp/init.sql
+        regexp: "DB_DATABASE"
+        replace: "{{ DB_DATABASE }}"
+    - name: Replace RegExp User
+      replace:
+        path: /tmp/init.sql
+        regexp: "DB_USER"
+        replace: "{{ DB_USER }}"
+    - name: Replace RegExp Replication User
+      replace:
+        path: /tmp/init.sql
+        regexp: "DB_REPL_USER"
+        replace: "{{ DB_REPL_USER }}"
+    - name: Replace RegExp Replication Pass
+      replace:
+        path: /tmp/init.sql
+        regexp: "DB_REPL_PASSWORD"
+        replace: "{{ DB_REPL_PASSWORD }}"
+    - name: run init.sql
+      command: /usr/bin/psql -a -f /tmp/init.sql
+      become: true
+      become_user: postgres
+- name: Slave Init
+  hosts: slave
+  become: yes
+  tasks:
+    - name: Check PostgreSQL
+      ansible.builtin.command:
+        cmd: "pg_ctlcluster 14 main status"
+      register: postgres_status
+      ignore_errors: true
+      become: yes
+      become_user: root
+    - name: Initialize PostgreSQL
+      ansible.builtin.command:
+        cmd: "pg_createcluster 14 main"
+      when: postgres_status.stdout.find('specified cluster \'14 main\' does not exist') != -1
+      become: yes
+      become_user: root
+    - name: Get c p
+      ansible.builtin.shell: "pg_lsclusters --json | jq -r '.[].configdir'"
+      register: pg_conf_path
+      become: yes
+      become_user: root
+    - name: Set Database Configuration
+      ansible.builtin.blockinfile:
+        create: true
+        path: "{{pg_conf_path.stdout}}/postgresql.conf"
+        block: |
+          listen_addresses = 'localhost, {{DB_REPL_HOST}}'
+          port = {{DB_REPL_PORT}}
+      become: yes
+      become_user: root
+    - name: Stop PostgreSQL
+      ansible.builtin.service:
+        name: postgresql@14-main
+        state: stopped
+      become: yes
+      become_user: root
+    - name: Get directory for backup
+      ansible.builtin.shell: "pg_lsclusters --json | jq -r '.[].pgdata'"
+      register: data_dir
+      become: yes
+      become_user: root
+    - name: Clean up directory
+      ansible.builtin.file:
+        state: "{{item}}"
+        path: "{{data_dir.stdout}}"
+        owner: postgres
+        group: postgres
+        mode: 0750
+      with_items:
+        - absent
+        - directory
+      become: yes
+      become_user: root
+    - name: Execute pg_basebackup
+      ansible.builtin.command:
+        cmd: |
+          pg_basebackup -v -R -h {{DB_HOST}} -p {{DB_PORT}} -U {{DB_REPL_USER}} -w -P -D {{data_dir.stdout}}
+      become: yes
+      become_user: postgres
+      environment:
+        PGPASSWORD: "{{ DB_REPL_PASSWORD }}"
+    - name: Start PostgreSQL
+      ansible.builtin.service:
+        name: postgresql@14-main
+        state: started
+      become: yes
+      become_user: root
+- name: Bot Installation
+  hosts: master
+  tasks:
+    - name: Create Dir
+      ansible.builtin.file:
+        path: /tmp/bot
+        owner: ansible
+        group: ansible
+        state: directory
+        mode: '0777'
+    - name: Download Bot
+      ansible.builtin.get_url:
+        url: https://github.com/NelsonFoxI/DevOPS/raw/docker/bot/bot.py
+        dest: /tmp/bot/bot.py
+        mode: '0755'
+    - name: Run Bot
+      command: python3 /tmp/bot/bot.py
+      environment:
+        TOKEN: "{{ TOKEN }}"
+        DB_HOST: "{{ DB_HOST }}"
+        DB_USER: "{{ DB_USER }}"
+        DB_PASSWORD: "{{ DB_PASSWORD }}"
+        DB_DATABASE: "{{ DB_DATABASE }}"
+        RM_HOST: "{{ RM_HOST }}"
+        RM_PORT: "{{ RM_PORT }}"
+        RM_USER: "{{ RM_USER }}"
+        RM_PASSWORD: "{{ RM_PASSWORD }}"

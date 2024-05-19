@@ -1,0 +1,14 @@
+TOKEN: Введите ваш токен
+RM_HOST: 192.168.100.8
+RM_PORT: 22
+RM_USER: nels
+RM_PASSWORD: kali
+DB_USER: nels
+DB_PASSWORD: kali
+DB_HOST: 192.168.100.10
+DB_PORT: 5432
+DB_DATABASE: tg_bot
+DB_REPL_USER: replicator
+DB_REPL_PASSWORD: replicator_password
+DB_REPL_HOST: 192.168.100.11
+DB_REPL_PORT: 5432

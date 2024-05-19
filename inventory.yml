@@ -1,0 +1,10 @@
+allhosts:
+  hosts:
+    master:
+      ansible_host: "{{ DB_HOST }}"
+      ansible_user: ansible
+      ansible_password: kali
+    slave:
+      ansible_host: "{{ DB_REPL_HOST }}"
+      ansible_user: ansible
+      ansible_password: kali
