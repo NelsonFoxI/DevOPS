@@ -1,0 +1,5 @@
+psycopg2
+paramiko
+python-telegram-bot==20.3
+python-dotenv
+

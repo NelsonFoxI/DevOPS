@@ -1,0 +1,21 @@
+CREATE USER ${DB_REPL_USER} WITH REPLICATION ENCRYPTED PASSWORD '${DB_REPL_PASSWORD}';
+
+\connect ${DB_DATABASE};
+
+CREATE TABLE IF NOT EXISTS emails (
+    ID SERIAL PRIMARY KEY,
+    email VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS phones (
+    ID SERIAL PRIMARY KEY,
+    phone VARCHAR(30) NOT NULL
+);
+
+INSERT INTO emails (email) VALUES
+    ('user1@mail.ru'),
+    ('user2@gmail.com');
+
+INSERT INTO phones (phone) VALUES
+    ('89995553535'),
+    ('+78987776666');
